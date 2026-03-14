@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover"/>
+  <meta name="apple-mobile-web-app-capable" content="yes"/>
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent"/>
+  <meta name="apple-mobile-web-app-title" content="ESL 終端"/>
+  <meta name="theme-color" content="#050810"/>
+  <title>ESL 市場終端</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { height: 100%; background: #050810; }
+    ::-webkit-scrollbar { display: none; }
+    body { -webkit-text-size-adjust: 100%; overscroll-behavior: none; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.35} }
+    @keyframes fadeIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+    button { border: none; cursor: pointer; -webkit-tap-highlight-color: transparent; font-family: inherit; background: none; }
+    input[type=range] { -webkit-appearance: none; appearance: none; height: 4px; border-radius: 4px; outline: none; cursor: pointer; }
+    input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; width: 24px; height: 24px; border-radius: 50%; background: #10b981; border: 3px solid #050810; box-shadow: 0 0 12px rgba(16,185,129,0.6); }
+    input[type=range]::-moz-range-thumb { width: 22px; height: 22px; border-radius: 50%; background: #10b981; border: 3px solid #050810; }
+    .fade { animation: fadeIn 0.3s ease forwards; }
+  </style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+
+const { useState, useMemo, useEffect } = React;
+
+const STOCK_DB = {
+  EI: {
+    name: "元太科技", ticker: "8069.TW", price: 152.5, change: -4.09, currency: "TWD",
+    target: "277.5", mktCap: "約 1,740 億 TWD", h52: "322.0", l52: "150.5",
+    history: [145, 170, 215, 190, 322, 280, 165, 152.5],
+    prediction: "元太 3/13 收於 152.5 元，已修正數據回饋。當前價位接近 52 週低點 (150.5)，技術面超賣，需關注下週一是否能守住 150 關卡。",
+  },
+  SL: {
+    name: "SoluM", ticker: "248070.KS", price: 16140, change: -0.68, currency: "KRW",
+    target: "21000", mktCap: "約 1 兆 KRW", h52: "22500", l52: "13200",
+    history: [14000, 15500, 18000, 17200, 19000, 17500, 16500, 16140],
+    prediction: "SoluM 股價連動韓國大盤調整。下週若北美物流標案進度明確，有望挑戰 18,000 以上壓力區。",
+  },
+  VU: {
+    name: "VusionGroup", ticker: "VU.PA", price: 120.4, change: -1.39, currency: "EUR",
+    target: "145.0", mktCap: "約 26 億 EUR", h52: "165.0", l52: "88.0",
+    history: [95, 110, 140, 125, 135, 155, 120, 120.4],
+    prediction: "軟體服務 (VAS) 轉型期波動較大。120 歐元為重要心理關卡，站穩後目標重回 135。",
+  },
+};
+
+const QOS = [
+  { type: "實時改價", prio: 7, dscp: "EF (46)", delay: "< 500ms", note: "法律合規核心" },
+  { type: "狀態確認", prio: 6, dscp: "CS5 (40)", delay: "< 1s",    note: "數據一致性校驗" },
+  { type: "廣告同步", prio: 2, dscp: "CS1 (8)", delay: "分鐘級",   note: "RMN 非關鍵流量" },
+];
+
+const LABELS = ["Jan'23","Apr'23","Jul'23","Oct'23","Jan'24","Apr'24","Jan'25","Mar'26"];
+
+function Sparkline({ data, color }) {
+  const w = 300, h = 80;
+  const min = Math.min(...data), max = Math.max(...data), r = max - min || 1;
+  const pts = data.map((v, i) => `${(i/(data.length-1))*w},${h-((v-min)/r)*(h-10)-5}`);
+  const id = `s${color.replace('#','')}`;
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} preserveAspectRatio="none" style={{width:'100%',height:'100%'}}>
+      <defs>
+        <linearGradient id={id} x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={color} stopOpacity="0.35"/>
+          <stop offset="100%" stopColor={color} stopOpacity="0"/>
+        </linearGradient>
+      </defs>
+      <path d={`M${pts.join('L')}L${w},${h}L0,${h}Z`} fill={`url(#${id})`}/>
+      <path d={`M${pts.join('L')}`} fill="none" stroke={color} strokeWidth="2.5" strokeLinecap="round"/>
+    </svg>
+  );
+}
+
+function MainChart({ data }) {
+  const w=320,h=200,pl=48,pt=12,pr=12,pb=30;
+  const iw=w-pl-pr, ih=h-pt-pb;
+  const min=Math.min(...data), max=Math.max(...data), range=max-min||1;
+  const pts = data.map((v,i) => [pl+(i/(data.length-1))*iw, pt+(1-(v-min)/range)*ih]);
+  const line = `M${pts.map(p=>p.join(',')).join('L')}`;
+  const area = `M${pts[0].join(',')}L${pts.map(p=>p.join(',')).join('L')}L${pl+iw},${pt+ih}L${pl},${pt+ih}Z`;
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} style={{width:'100%',height:'100%'}}>
+      <defs>
+        <linearGradient id="mg" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#3b82f6" stopOpacity="0.4"/>
+          <stop offset="100%" stopColor="#3b82f6" stopOpacity="0"/>
+        </linearGradient>
+      </defs>
+      {[0,1,2,3,4].map(i => {
+        const y=pt+(i/4)*ih, val=max-(i/4)*range;
+        return (
+          <g key={i}>
+            <line x1={pl} y1={y} x2={pl+iw} y2={y} stroke="#1e293b" strokeWidth="1" strokeDasharray="4,4"/>
+            <text x={pl-6} y={y+4} fill="#475569" fontSize="9" textAnchor="end">{Math.round(val)}</text>
+          </g>
+        );
+      })}
+      {pts.map(([x],i) => i%2===0 &&
+        <text key={i} x={x} y={h-6} fill="#475569" fontSize="8" textAnchor="middle">{LABELS[i]}</text>
+      )}
+      <path d={area} fill="url(#mg)"/>
+      <path d={line} fill="none" stroke="#3b82f6" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"/>
+      {pts.map(([x,y],i) =>
+        <circle key={i} cx={x} cy={y} r="3.5" fill="#3b82f6" stroke="#050810" strokeWidth="2"/>
+      )}
+    </svg>
+  );
+}
+
+function BatteryChart({ n }) {
+  const w=280, h=110;
+  const vals = Array.from({length:30}, (_,i) => 1200/(0.005+((i+1)*1.2)/3600)/(24*365.25));
+  const max = Math.max(...vals);
+  const pts = vals.map((v,i) => [(i/29)*w, h-(v/max)*(h-10)-5]);
+  const [cx,cy] = pts[n-1];
+  return (
+    <svg viewBox={`0 0 ${w} ${h}`} style={{width:'100%',height:'100%'}}>
+      <defs>
+        <linearGradient id="battg" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor="#10b981" stopOpacity="0.3"/>
+          <stop offset="100%" stopColor="#10b981" stopOpacity="0"/>
+        </linearGradient>
+      </defs>
+      <path d={`M${pts[0].join(',')}L${pts.map(p=>p.join(',')).join('L')}L${w},${h}L0,${h}Z`} fill="url(#battg)"/>
+      <path d={`M${pts.map(p=>p.join(',')).join('L')}`} fill="none" stroke="#10b981" strokeWidth="2" strokeLinecap="round"/>
+      <line x1={cx} y1={0} x2={cx} y2={h} stroke="#10b981" strokeOpacity="0.25" strokeWidth="1" strokeDasharray="3,3"/>
+      <circle cx={cx} cy={cy} r="5" fill="#10b981" stroke="#0b1120" strokeWidth="2.5"/>
+    </svg>
+  );
+}
+
+function App() {
+  const [id, setId] = useState('EI');
+  const [tab, setTab] = useState('chart');
+  const [n, setN] = useState(5);
+  const [now, setNow] = useState(new Date());
+
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 60000);
+    return () => clearInterval(t);
+  }, []);
+
+  const cur = STOCK_DB[id];
+  const isUp = cur.change >= 0;
+  const life = useMemo(() => (1200/(0.005+(n*1.2)/3600)/(24*365.25)).toFixed(1), [n]);
+  const p2 = v => String(v).padStart(2,'0');
+  const ts = `${now.getFullYear()}-${p2(now.getMonth()+1)}-${p2(now.getDate())} ${p2(now.getHours())}:${p2(now.getMinutes())}`;
+
+  const L = { fontSize:9, color:'#475569', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.1em' };
+  const card = { background:'rgba(0,0,0,0.45)', borderRadius:14, border:'1px solid #1e293b', padding:14 };
+
+  return (
+    <div style={{minHeight:'100dvh', background:'#050810', color:'#cbd5e1',
+      fontFamily:"-apple-system,'SF Pro Display','Helvetica Neue',sans-serif",
+      overflowX:'hidden', WebkitTextSizeAdjust:'100%',
+      paddingBottom:'env(safe-area-inset-bottom,24px)'}}>
+
+      {/* Header */}
+      <header style={{position:'sticky', top:0, zIndex:50,
+        background:'rgba(5,8,16,0.94)', backdropFilter:'blur(24px)', WebkitBackdropFilter:'blur(24px)',
+        borderBottom:'1px solid #1e293b',
+        padding:'14px 18px', paddingTop:'max(14px, env(safe-area-inset-top,14px))',
+        display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+        <div style={{display:'flex', alignItems:'center', gap:8}}>
+          <span style={{width:8,height:8,borderRadius:'50%',background:'#10b981',
+            display:'inline-block',boxShadow:'0 0 8px #10b981',animation:'pulse 2s infinite'}}/>
+          <span style={{fontSize:12,fontWeight:900,color:'#f1f5f9',letterSpacing:'0.1em',textTransform:'uppercase'}}>
+            ESL 市場終端
+          </span>
+          <span style={{fontSize:9,color:'#334155',fontWeight:700,textTransform:'uppercase',
+            marginLeft:8,paddingLeft:8,borderLeft:'1px solid #1e293b',letterSpacing:'0.08em'}}>
+            電子貨架標籤
+          </span>
+        </div>
+        <span style={{fontSize:10,fontFamily:'monospace',color:'#334155'}}>{ts}</span>
+      </header>
+
+      <main style={{maxWidth:640, margin:'0 auto', padding:'14px 14px'}}>
+
+        {/* Stock Selector */}
+        <div style={{display:'flex', gap:10, overflowX:'auto', paddingBottom:4, marginBottom:14}}>
+          {Object.entries(STOCK_DB).map(([key, d]) => {
+            const active = id === key, up = d.change >= 0;
+            return (
+              <button key={key} onClick={() => setId(key)} style={{
+                minWidth:128, flex:'1 0 128px', padding:'13px 13px', borderRadius:16, textAlign:'left',
+                border:`1.5px solid ${active ? 'rgba(59,130,246,0.45)' : '#1e293b'}`,
+                background: active ? '#0f172a' : '#0b1120',
+                opacity: active ? 1 : 0.58,
+                boxShadow: active ? '0 0 28px rgba(59,130,246,0.12)' : 'none',
+                transition:'all 0.2s',
+              }}>
+                <div style={{...L, marginBottom:3}}>{d.ticker}</div>
+                <div style={{fontSize:13,fontWeight:800,color:'#f1f5f9',marginBottom:5,
+                  whiteSpace:'nowrap',overflow:'hidden',textOverflow:'ellipsis'}}>{d.name}</div>
+                <div style={{fontSize:19,fontWeight:900,color:'#f8fafc',marginBottom:3,
+                  fontVariantNumeric:'tabular-nums',letterSpacing:'-0.01em'}}>
+                  {d.price.toLocaleString()}
+                </div>
+                <div style={{fontSize:10,fontWeight:700,color:up?'#10b981':'#f43f5e'}}>
+                  {up?'▲':'▼'} {Math.abs(d.change)}%
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Main Card */}
+        <div style={{background:'#0b1120', borderRadius:22, border:'1px solid #1e293b',
+          overflow:'hidden', boxShadow:'0 20px 60px rgba(0,0,0,0.7)', marginBottom:14}}>
+
+          <div style={{padding:'22px 18px 0'}}>
+            <div style={{...L, marginBottom:5, color:'#334155'}}>{cur.ticker} · 參考收盤</div>
+
+            {/* Price Row */}
+            <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-start', marginBottom:18}}>
+              <div style={{display:'flex', alignItems:'baseline', gap:8}}>
+                <span style={{fontSize:38,fontWeight:900,color:'#f8fafc',letterSpacing:'-0.03em',
+                  fontVariantNumeric:'tabular-nums'}}>
+                  {cur.price.toLocaleString()}
+                </span>
+                <span style={{fontSize:13,color:'#475569',fontWeight:600}}>{cur.currency}</span>
+              </div>
+              <div style={{textAlign:'right'}}>
+                <div style={{fontSize:20,fontWeight:900,color:isUp?'#10b981':'#f43f5e',letterSpacing:'-0.01em'}}>
+                  {isUp?'+':''}{cur.change}%
+                </div>
+                <div style={{...L, marginTop:4}}>目標 {cur.currency} {cur.target}</div>
+              </div>
+            </div>
+
+            {/* Tabs */}
+            <div style={{display:'flex', gap:3, background:'#050810', borderRadius:11,
+              padding:3, marginBottom:18, width:'fit-content'}}>
+              {[['chart','📈 走勢圖'],['report','📋 收盤報告']].map(([k,lb]) => (
+                <button key={k} onClick={() => setTab(k)} style={{
+                  padding:'9px 16px', borderRadius:9,
+                  background: tab===k ? '#3b82f6' : 'transparent',
+                  color: tab===k ? '#fff' : '#475569',
+                  fontSize:11, fontWeight:800, letterSpacing:'0.03em',
+                  transition:'all 0.2s',
+                }}>{lb}</button>
+              ))}
+            </div>
+          </div>
+
+          {/* Tab Content */}
+          <div className="fade" key={tab} style={{padding:'0 18px 22px', minHeight:280}}>
+            {tab === 'chart' ? (
+              <div>
+                <div style={{display:'flex', justifyContent:'space-between', ...L,
+                  borderBottom:'1px solid #1e293b', paddingBottom:10, marginBottom:14}}>
+                  <span>歷史走勢 2023 – 2026</span>
+                  <div style={{display:'flex', gap:14}}>
+                    <span style={{color:'#f43f5e'}}>年高 {cur.h52}</span>
+                    <span style={{color:'#10b981'}}>年低 {cur.l52}</span>
+                  </div>
+                </div>
+                <div style={{height:195, marginBottom:18}}><MainChart data={cur.history}/></div>
+                <div style={{display:'grid', gridTemplateColumns:'1fr 1fr', gap:10}}>
+                  {[
+                    {label:'52週高點', value:cur.h52, color:'#f43f5e'},
+                    {label:'52週低點', value:cur.l52, color:'#10b981'},
+                    {label:'市值規模', value:cur.mktCap, color:'#94a3b8'},
+                    {label:'預測目標', value:cur.target, hi:true},
+                  ].map((item,i) => (
+                    <div key={i} style={{...card,
+                      border:`1px solid ${item.hi?'rgba(16,185,129,0.3)':'#1e293b'}`,
+                      background:item.hi?'rgba(16,185,129,0.07)':'rgba(0,0,0,0.3)'}}>
+                      <div style={{...L, marginBottom:5}}>{item.label}</div>
+                      <div style={{fontSize:14,fontWeight:900,color:item.color||'#f1f5f9'}}>{item.value}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : (
+              <div>
+                {/* Analysis */}
+                <div style={{...card, marginBottom:16, borderColor:'rgba(16,185,129,0.2)'}}>
+                  <div style={{...L, color:'#10b981', marginBottom:8, display:'flex', alignItems:'center', gap:5}}>
+                    <span>⚡</span> 數據校對結論
+                  </div>
+                  <p style={{fontSize:12, color:'#94a3b8', lineHeight:1.8, fontStyle:'italic', margin:0}}>
+                    {cur.prediction}
+                  </p>
+                </div>
+
+                {/* QoS */}
+                <div style={{...L, marginBottom:10}}>技術 QoS 映射</div>
+                <div style={{display:'flex', flexDirection:'column', gap:8, marginBottom:18}}>
+                  {QOS.map((q,i) => (
+                    <div key={i} style={{...card, display:'flex', justifyContent:'space-between', alignItems:'center'}}>
+                      <div>
+                        <div style={{fontSize:13,fontWeight:700,color:'#e2e8f0',marginBottom:3}}>{q.type}</div>
+                        <div style={{fontSize:9,fontFamily:'monospace',color:'#475569'}}>{q.dscp} · {q.delay}</div>
+                      </div>
+                      <div style={{textAlign:'right'}}>
+                        <span style={{fontSize:9,fontWeight:800,padding:'4px 10px',borderRadius:20,
+                          background:q.prio===7?'rgba(244,63,94,0.15)':'rgba(16,185,129,0.15)',
+                          color:q.prio===7?'#f43f5e':'#10b981', display:'block', marginBottom:4}}>
+                          PRIO {q.prio}
+                        </span>
+                        <div style={{fontSize:9,color:'#475569'}}>{q.note}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Battery */}
+                <div style={{display:'flex', justifyContent:'space-between', alignItems:'flex-end',
+                  ...L, borderBottom:'1px solid #1e293b', paddingBottom:10, marginBottom:12}}>
+                  <span>電池壽命建模</span>
+                  <span style={{fontSize:26,fontWeight:900,color:'#10b981',letterSpacing:'-0.02em'}}>
+                    {life} <span style={{fontSize:11,fontWeight:600,color:'#34d399'}}>YEARS</span>
+                  </span>
+                </div>
+                <div style={{...card}}>
+                  <div style={{...L, marginBottom:12}}>
+                    每日更新次數 N: <span style={{color:'#10b981', fontSize:12}}>{n}</span>
+                  </div>
+                  <input type="range" min="1" max="25" value={n}
+                    onChange={e => setN(+e.target.value)}
+                    style={{width:'100%', marginBottom:14,
+                      background:`linear-gradient(to right,#10b981 ${((n-1)/24)*100}%,#1e293b ${((n-1)/24)*100}%)`}}/>
+                  <div style={{height:110}}><BatteryChart n={n}/></div>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Bottom Sparklines */}
+        <div style={{display:'grid', gridTemplateColumns:'1fr 1fr 1fr', gap:10, marginBottom:20}}>
+          {Object.entries(STOCK_DB).map(([key, d]) => {
+            const up = d.change >= 0;
+            return (
+              <button key={key} onClick={() => setId(key)} style={{
+                background: id===key ? '#0f172a' : '#0b1120',
+                borderRadius:14,
+                border:`1px solid ${id===key?'rgba(59,130,246,0.3)':'#1e293b'}`,
+                padding:'11px 11px 8px', textAlign:'left',
+              }}>
+                <div style={{...L, marginBottom:4}}>{d.ticker.split('.')[0]}</div>
+                <div style={{height:34, marginBottom:5}}><Sparkline data={d.history} color={up?'#10b981':'#f43f5e'}/></div>
+                <div style={{fontSize:10,fontWeight:700,color:up?'#10b981':'#f43f5e'}}>
+                  {up?'▲':'▼'} {Math.abs(d.change)}%
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        <p style={{textAlign:'center',fontSize:9,color:'#1e293b',fontFamily:'monospace',
+          letterSpacing:'0.1em',textTransform:'uppercase',paddingBottom:4}}>
+          ESL Comprehensive Analysis Terminal · 2026-03-14
+        </p>
+      </main>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
